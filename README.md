@@ -19,5 +19,11 @@ specified at the `config.cfg` file. If that files hasn't been updated in a day
 After running the daemon, delete the `config.cfg` file, so it makes it harder to
 find out which files it will delete, the name of your `.delete` file and etc.
 
+## TODO
+1. Kill the process itself after deleting the files
+2. Trap kill signals making killing the process harder
+3. Load external dependencies (for deletion) on memory, so we prevent it an attacker changes the binary or deletes it
+  1. Find out how to check if the on-memory binary hasn't been changed
+
 ## Notes
 This is still a work in progress
