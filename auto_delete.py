@@ -1,8 +1,9 @@
 import ConfigParser
 import sys
 import os
+import subprocess
+from datetime import datetime
 from json import loads as jloads
-import random
 
 import daemon
 
@@ -18,10 +19,10 @@ class ConfigFileNotFound(Exception):
         self.error = errors
         self.message = message
 
-class Delete(object):
+class AutoDelete(object):
     def __init__(self, default_config=True):
         if default_config == True:
-            self.default_config = "./config.cfg"
+            self.default_config = "config.cfg"
         else:
             if os.path.exists(default_config):
                 self.default_config = default_config
@@ -29,44 +30,55 @@ class Delete(object):
                 raise ConfigFileNotFound("Config for 'auto-delete was not found'")
                 sys.exit(1)
         
-        config = ConfigParser.ConfigParser(default_config)
-        config.readfd(open(default_confg))
+        config = ConfigParser.RawConfigParser()
+        config.read(self.default_config)
         
-        if config.getboolean("auto-delete", "use_overwrite"):
-            self.program = None
-            self.args = None
-        else:
-            self.program = config.get("deletion", "program")
-            self.args = config.get("deletion", "args")
-            if _test_executable() == False:
-                raise ExecutableError("Program %s is not executable or could not be found." % self.cmd)
-                sys.exit(1)
-        
-        self.fcheck = config.get("delection", "fcheck")
+        self.program = config.get("deletion", "program")
+        self.args = config.get("deletion", "args")
+        if self._test_executable() == False:
+            raise ExecutableError("Program %s is not executable or could not be found." % self.program, "")
+            sys.exit(1)
+
+        self.max_days = config.getint("auto-delete", "max_days") 
+        self.fcheck = config.get("files", "fcheck")
         self.include = jloads(config.get("files", "include"))
         self.debug = config.getboolean("auto-delete", "debug")
 
-        if debug:
+        if self.debug:
             sys.stdout.write("Warning: debug is enabled\n")
             for f in self.include:
                 if not os.path.exists(f):
                     sys.stdout.write("%s does not exist\n" % f)
                 else:
                     sys.stdout.write("Found path %s\n" % f) 
-    
-    def _execute_wiper(self, fpath): # TODO, fix this crap
-        sys.stdout.write("Executing custom wiper - Warning: security issue\n")
-        random.seed()
-        pass
+
+    def cmp_dates(self):
+        if not os.path.exists(self.fcheck):
+            return True
+        mtime = datetime.fromtimestamp(os.path.getmtime(self.fcheck))
+        now = datetime.now()
+        
+        delta = now - mtime
+        if delta.days >= self.max_days:
+            return False 
+        return True
+
+    def _destroy(self, fpath):
+        fpath = os.path.realpath(fpath)
+        destroy_cmd = self.program + " " + self.args.strip('"') + " " + fpath
+        proc = subprocess.Popen(destroy_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE, shell=True)
+        
+        _stdout, _stderr = proc.communicate("")
+        _stdout = str(_stdout).strip()
+        
+        return _stdout
 
     def execute(self):
         for f in self.include:
             if self.debug:
                 sys.stdout.write("Deleting %s\n" % f)
-            if self.program:
-                self._execute_program(f)
-            else:
-                self._execute_wiper(f)
+            self._destroy(f)
 
     def _test_executable(self):
         def is_exe(fpath):
@@ -78,8 +90,20 @@ class Delete(object):
                 return True
         else:
             for path in os.environ["PATH"].split(os.pathsep):
-                path = path.strip('"')
-                exe_file = os.path.join(path, self.program)
+                exe_file = os.path.join(path, self.program.strip('"'))
                 if is_exe(exe_file):
+                    self.program = exe_file
                     return True
         return False
+    
+    def run(self):
+        while True:
+            print "running"
+            changed = self.cmp_dates()
+            if changed:
+                self.execute()
+            
+if __name__ == "__main__":
+    ad = AutoDelete()
+    with daemon.DaemonContext():
+        ad.run()
