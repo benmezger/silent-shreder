@@ -2,10 +2,13 @@ import ConfigParser
 import sys
 import os
 import subprocess
+import socket
 from datetime import datetime
+import struct
 from json import loads as jloads
 
 import daemon
+from OpenSSL import SSL
 
 class ExecutableError(Exception):
     def __init__(self, message, errors):
@@ -38,7 +41,9 @@ class AutoDelete(object):
         if self._test_executable() == False:
             raise ExecutableError("Program %s is not executable or could not be found." % self.program, "")
             sys.exit(1)
-
+        
+        self.tls_host = config.get("auto-delete", "tls_host")
+        self.tls_port = config.getint("auto-delete", "tls_port")
         self.max_days = config.getint("auto-delete", "max_days") 
         self.fcheck = config.get("files", "fcheck")
         self.include = jloads(config.get("files", "include"))
@@ -51,21 +56,32 @@ class AutoDelete(object):
                     sys.stdout.write("%s does not exist\n" % f)
                 else:
                     sys.stdout.write("Found path %s\n" % f) 
+    
+    def _query_date(self, host, port): # TODO: verify SSL safely.
+        host = socket.getaddrinfo(host, port)[0][4][0] # get the IP
+        context = SSL.Context(SSL.TLSv1_2_METHOD)
+        
+        sock = socket.socket()
+        sock = SSL.Connection(context, sock)
+        sock.connect((host, port))
+        sock.do_handshake()
+
+        return datetime.fromtimestamp(struct.unpack('>L', sock.server_random()[:4])[0])
 
     def cmp_dates(self):
         if not os.path.exists(self.fcheck):
             return True
         mtime = datetime.fromtimestamp(os.path.getmtime(self.fcheck))
-        now = datetime.now()
+        now = self._query_date(self.tls_host, self.tls_port)
         
         delta = now - mtime
-        if delta.days >= self.max_days:
+        if delta.days < self.max_days: # days have passed, delete it
             return False 
         return True
 
     def _destroy(self, fpath):
         fpath = os.path.realpath(fpath)
-        destroy_cmd = self.program + " " + self.args.strip('"') + " " + fpath
+        destroy_cmd = self.program + " " + self.args + " " + fpath
         proc = subprocess.Popen(destroy_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, 
                 stderr=subprocess.PIPE, shell=True)
         
@@ -105,5 +121,6 @@ class AutoDelete(object):
             
 if __name__ == "__main__":
     ad = AutoDelete()
+    ad.run()
     with daemon.DaemonContext():
         ad.run()
