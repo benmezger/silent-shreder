@@ -1,126 +1,126 @@
-import ConfigParser
-import sys
 import os
-import subprocess
-import socket
-from datetime import datetime
-import struct
-from json import loads as jloads
+import sys
+import ConfigParser
+import re
+import hashlib
 
-import daemon
-from OpenSSL import SSL
+from time import sleep
 
-class ExecutableError(Exception):
-    def __init__(self, message, errors):
-        super(ExecutableError, self).__init__(message)
-        self.error = errors
-        self.message = message
+from core import exceptions
+from core import utils
 
-class ConfigFileNotFound(Exception):
-    def __init__(self, message, errors):
-        super(ConfigFileNotFound, self).__init__(message)
-        self.error = errors
-        self.message = message
+# import daemon
 
-class AutoDelete(object):
-    def __init__(self, default_config=True):
-        if default_config == True:
-            self.default_config = "config.cfg"
-        else:
-            if os.path.exists(default_config):
-                self.default_config = default_config
-            else:
-                raise ConfigFileNotFound("Config for 'auto-delete was not found'")
-                sys.exit(1)
-        
-        config = ConfigParser.RawConfigParser()
-        config.read(self.default_config)
-        
-        self.program = config.get("deletion", "program")
-        self.args = config.get("deletion", "args")
-        if self._test_executable() == False:
-            raise ExecutableError("Program %s is not executable or could not be found." % self.program, "")
-            sys.exit(1)
-        
-        self.tls_host = config.get("auto-delete", "tls_host")
-        self.tls_port = config.getint("auto-delete", "tls_port")
-        self.max_days = config.getint("auto-delete", "max_days") 
-        self.fcheck = config.get("files", "fcheck")
-        self.include = jloads(config.get("files", "include"))
-        self.debug = config.getboolean("auto-delete", "debug")
+SHA512_RE = re.compile(r'^\w{128}$')
 
-        if self.debug:
-            sys.stdout.write("Warning: debug is enabled\n")
-            for f in self.include:
-                if not os.path.exists(f):
-                    sys.stdout.write("%s does not exist\n" % f)
-                else:
-                    sys.stdout.write("Found path %s\n" % f) 
-    
-    def _query_date(self, host, port): # TODO: verify SSL safely.
-        host = socket.getaddrinfo(host, port)[0][4][0] # get the IP
-        context = SSL.Context(SSL.TLSv1_2_METHOD)
-        
-        sock = socket.socket()
-        sock = SSL.Connection(context, sock)
-        sock.connect((host, port))
-        sock.do_handshake()
-
-        return datetime.fromtimestamp(struct.unpack('>L', sock.server_random()[:4])[0])
-
-    def cmp_dates(self):
-        if not os.path.exists(self.fcheck):
-            return True
-        mtime = datetime.fromtimestamp(os.path.getmtime(self.fcheck))
-        now = self._query_date(self.tls_host, self.tls_port)
-        
-        delta = now - mtime
-        if delta.days < self.max_days: # days have passed, delete it
-            return False 
+def is_valid_hash(_hash):
+    if SHA512_RE.match(_hash):
         return True
+    return False
 
-    def _destroy(self, fpath):
-        fpath = os.path.realpath(fpath)
-        destroy_cmd = self.program + " " + self.args + " " + fpath
-        proc = subprocess.Popen(destroy_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, 
-                stderr=subprocess.PIPE, shell=True)
-        
-        _stdout, _stderr = proc.communicate("")
-        _stdout = str(_stdout).strip()
-        
-        return _stdout
+class Shreder(object):
+    def __init__(self, configfile="config.cfg"):
+        if not os.path.exists(os.path.abspath(configfile)):
+            raise exceptions.ConfigFileNotFound("Config for 'shreder' was not found")
+            sys.exit(1)
 
-    def execute(self):
-        for f in self.include:
-            if self.debug:
-                sys.stdout.write("Deleting %s\n" % f)
-            self._destroy(f)
+        self.config = ConfigParser.RawConfigParser()
+        self.config.read(configfile)
+
+        self.debug = self.config.getboolean("shreder", "debug")
+        self.max_days = self.config.getfloat("shreder", "max_days")
+        self.executable = self.config.get("executable", "program")
+        self.executable_args = self.config.get("executable", "args")
+        self.executable_hash = self.config.get("executable", "hash")
+        self.hash_file =self.config.get("files", "hashes")
+
+        self.hashes = self.set_hashes()
+
+        self._test_executable()
+
+        self.prove_path = self.config.get("files", "proves")
+        if not os.path.exists(self.prove_path):
+            sys.stdout.write("File prove does not exist. Make sure you create it.\n")
+
+        self.info()
+        self.wait()
+
+    def set_hashes(self):
+        """
+        Set hashes to an iterator
+        """
+
+        if not os.path.exists(os.path.abspath(self.hash_file)):
+            raise FileNotFoundError("'%s' was not found. Exiting" % self.hash_file)
+            sys.exit(1)
+
+        hashes = []
+        with open(os.path.abspath(self.hash_file), "r") as f:
+            while True:
+                line = f.readline().strip()
+                if is_valid_hash(line):
+                    hashes.append(line)
+                if line == "":
+                    break
+        return self.__next_hash(hashes)
+
+    def __get_next_prove(self):
+        with open(self.prove_path, "r") as f:
+            line = f.readline().strip()
+            if line:
+                return line
+        return ""
+
+    def verify_hash(self, msg):
+        msg = hashlib.sha512(msg)
+        return msg.hexdigest() == self.hashes.next().lower()
 
     def _test_executable(self):
-        def is_exe(fpath):
-            return os.path.isfile(fpath) and os.access(fpath, os.X_OK)
+        """
+        Tests if the hash matches the executable and checks if the executable exists
+        """
 
-        fpath, fname = os.path.split(self.program)
+        def is_exe(fpath): return os.path.isfile(fpath) and os.access(fpath, os.X_OK)
+
+        # verify hash first
+        current_sha = hashlib.sha512()
+        with open(self.executable, "rb") as bf:
+            while True:
+                data = bf.read(65536) # 64kb
+                if not data:
+                    break
+                current_sha.update(data)
+
+        if current_sha.hexdigest() != self.executable_hash:
+            sys.stdout.write("Hash of executable '%s' does not match\n" %
+                    self.executable)
+            sys.exit(1)
+
+        fpath, fname = os.path.split(self.executable)
         if fpath:
-            if is_exe(self.program):
+            if is_exe(self.executable):
                 return True
-        else:
-            for path in os.environ["PATH"].split(os.pathsep):
-                exe_file = os.path.join(path, self.program.strip('"'))
-                if is_exe(exe_file):
-                    self.program = exe_file
-                    return True
         return False
-    
-    def run(self):
-        while True:
-            print "running"
-            changed = self.cmp_dates()
-            if changed:
-                self.execute()
-            
+
+    def __next_hash(self, hashlist):
+        for _ in hashlist:
+            yield _
+
+    def __wait(self):
+        counter = 10
+        while counter > 0:
+            sys.stdout.write("Starting execution in %d\n" % counter)
+            sys.stdout.write("C^c to stop\n")
+            sleep(1)
+            counter -= 1
+
+    def info(self):
+        sys.stdout.write("########### Shreder information ##########\n")
+        sys.stdout.write("Current pid: %*d\n" % (20, os.getpid()))
+        sys.stdout.write("Debug enabled: %*d\n" % (18, 1 if self.debug else 0))
+        sys.stdout.write("Max days: %*s\n" % (23, self.max_days))
+        sys.stdout.write("Shreding executable: %*s\n" % (12, self.executable))
+        sys.stdout.write("Executable args %*s\n" % (17, self.executable_args))
+
 if __name__ == "__main__":
-    ad = AutoDelete()
-    ad.run()
-    with daemon.DaemonContext():
-        ad.run()
+    ss = Shreder()
