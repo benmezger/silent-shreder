@@ -7,7 +7,7 @@ import hashlib
 from time import sleep
 
 from core import exceptions
-from core import utils
+from core.sighandler import SigHandler
 
 # import daemon
 
@@ -32,7 +32,7 @@ class Shreder(object):
         self.executable = self.config.get("executable", "program")
         self.executable_args = self.config.get("executable", "args")
         self.executable_hash = self.config.get("executable", "hash")
-        self.hash_file =self.config.get("files", "hashes")
+        self.hash_file = self.config.get("files", "hashes")
 
         self.hashes = self.set_hashes()
 
@@ -42,7 +42,12 @@ class Shreder(object):
         if not os.path.exists(self.prove_path):
             sys.stdout.write("File prove does not exist. Make sure you create it.\n")
 
+        self.run()
+
+    def run(self):
+        signal_handler = SigHandler(self, "info")
         self.info()
+        signal_handler.setup()
         self.wait()
 
     def set_hashes(self):
@@ -106,7 +111,7 @@ class Shreder(object):
         for _ in hashlist:
             yield _
 
-    def __wait(self):
+    def wait(self):
         counter = 10
         while counter > 0:
             sys.stdout.write("Starting execution in %d\n" % counter)
@@ -124,3 +129,4 @@ class Shreder(object):
 
 if __name__ == "__main__":
     ss = Shreder()
+    ss.run()
