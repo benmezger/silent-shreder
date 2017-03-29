@@ -21,4 +21,5 @@ file and if it matches, it resets the counter, otherwise it runs your
 2. Trap kill signals making killing the process harder
 3. Implement the clock timer
 4. Run it as a UNIX daemon
+5. Figure out a better name for this program
 
