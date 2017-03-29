@@ -1,4 +1,5 @@
 import signal
+import atexit
 
 sig_types = {
         signal.SIGABRT: 'SIGABRT',
@@ -41,6 +42,7 @@ class SigHandler(object):
             sgn.append(signal.signal(num, self.handler))
             signal.siginterrupt(num, False)
 
+    @atexit.register
     def handler(self, signum, frame):
         getattr(self.cls, self.funcn)()
 
