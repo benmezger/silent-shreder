@@ -3,11 +3,16 @@ import sys
 import ConfigParser
 import re
 import hashlib
+import tempfile
+import errno
+import subprocess
+import json
 
 from time import sleep
 
 from core import exceptions
 from core.sighandler import SigHandler
+from core.counter import ClockSpawner
 
 # import daemon
 
@@ -17,6 +22,19 @@ def is_valid_hash(_hash):
     if SHA512_RE.match(_hash):
         return True
     return False
+
+def is_root():
+    return os.getuid() == 0
+
+def can_write_fs(path):
+    try:
+        test_file = tempfile.TemporaryFile(dir=path)
+        test_file.close()
+        assert os.access(path, os.W_OK)
+    except OSError as err:
+        if err.errno == errno.EACCES:
+            return False
+    return True
 
 class Shreder(object):
     def __init__(self, configfile="config.cfg"):
@@ -28,11 +46,22 @@ class Shreder(object):
         self.config.read(configfile)
 
         self.debug = self.config.getboolean("shreder", "debug")
-        self.max_days = self.config.getfloat("shreder", "max_days")
+        self.max_hours = self.config.getfloat("shreder", "max_hours")
         self.executable = self.config.get("executable", "program")
         self.executable_args = self.config.get("executable", "args")
         self.executable_hash = self.config.get("executable", "hash")
         self.hash_file = self.config.get("files", "hashes")
+        self.files = json.loads(self.config.get("files", "include"))
+
+        if is_root():
+            sys.stdout.write("Running as a root user. Create a different user \
+                    and run it again.\n")
+            sys.exit(1)
+
+        for _file in self.files:
+            if not can_write_fs(_file):
+                sys.stdout.write("'%s' doesn't have permission for writting" % _file)
+                sys.exit(1)
 
         self.hashes = self.set_hashes()
 
@@ -45,10 +74,21 @@ class Shreder(object):
         self.run()
 
     def run(self):
-        signal_handler = SigHandler(self, "info")
+        signal_handler = SigHandler(self, "shred", debug=self.debug)
         self.info()
         signal_handler.setup()
         self.wait()
+
+        clock = ClockSpawner(self.max_hours, self, self.shred)
+        clock.run()
+
+    def shred(self):
+        for _f in self.files:
+            if self.debug:
+                sys.stdout.write("Running %s %s %s" % (self.executable,
+                                                       self.executable_args, _f))
+            else:
+                subprocess.call([self.executable, self.executable_args, _f])
 
     def set_hashes(self):
         """
@@ -123,7 +163,7 @@ class Shreder(object):
         sys.stdout.write("########### Shreder information ##########\n")
         sys.stdout.write("Current pid: %*d\n" % (20, os.getpid()))
         sys.stdout.write("Debug enabled: %*d\n" % (18, 1 if self.debug else 0))
-        sys.stdout.write("Max days: %*s\n" % (23, self.max_days))
+        sys.stdout.write("Max hours: %*s\n" % (23, self.max_hours))
         sys.stdout.write("Shreding executable: %*s\n" % (12, self.executable))
         sys.stdout.write("Executable args %*s\n" % (17, self.executable_args))
 
