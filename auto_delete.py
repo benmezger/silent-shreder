@@ -20,14 +20,38 @@ from core.counter import ClockSpawner
 SHA512_RE = re.compile(r'^\w{128}$')
 
 def is_valid_hash(_hash):
+    """Verify if givin hash is a valid SHA512.
+
+    Args:
+        _hash (str): A SHA512 string.
+
+    Returns:
+        bool: True if _hash is a valid SHA512, False otherwise.
+    """
+
     if SHA512_RE.match(_hash):
         return True
     return False
 
 def is_root():
+    """Verify is current running user is root.
+
+    Returns:
+        bool: True if user is root, False otherwise.
+    """
+
     return os.getuid() == 0
 
 def can_write_fs(path):
+    """Test if we can write in a givin directory
+
+    Args:
+        path (str): A valid path location
+
+    Returns:
+        bool: True if we have write access to the givin path, False otherwise.
+    """
+
     try:
         test_file = tempfile.TemporaryFile(dir=path)
         test_file.close()
@@ -38,7 +62,24 @@ def can_write_fs(path):
     return True
 
 class Shreder(object):
+    """Main class for the Shreder, takes care of initializing all the componets.
+    """
+
     def __init__(self, configfile="config.cfg"):
+        """Shreder's contructor
+
+        The constructor will initialize all the basic components, such as:
+            1. Making sure the config file exists and parse it's data.
+            2. Verify current user.
+            3. Check if files opt-in for deletion have write access.
+            4. Parse user's hashes.
+            5. Test removal executable (if exists and hash matches)
+            6. Check if prove file exists.
+
+        Args:
+            configfile (str): a path with the configuration file for Shreder
+        """
+
         if not os.path.exists(os.path.abspath(configfile)):
             raise exceptions.ConfigFileNotFound("Config for 'shreder' was not found")
             sys.exit(1)
@@ -75,6 +116,8 @@ class Shreder(object):
         self.run()
 
     def run(self):
+        """Initializes signal handler, clock and starts to run."""
+
         signal_handler = SigHandler(self, "shred", debug=self.debug)
         self.info()
         signal_handler.setup()
@@ -84,6 +127,10 @@ class Shreder(object):
         clock.run()
 
     def shred(self):
+        """If the giving clock as reached it's timeout, it calls shred to execute
+        user's giving executable and remove the files.
+        """
+
         for _f in self.files:
             if self.debug:
                 sys.stdout.write("Running %s %s %s" % (self.executable,
@@ -92,6 +139,16 @@ class Shreder(object):
                 subprocess.call([self.executable, self.executable_args, _f])
 
     def secure_delete(path, passes=1):
+        """Secure delete a file by overwritting it using /dev/urandom.
+
+        Args:
+            path (str): The path for a file to delete.
+            passes (int): Amount of time urandom will overwrite the data.
+
+        Returns:
+            bool: True if successful, False otherwise.
+        """
+
         with open(path, "ba+") as f:
             _len = f.tell()
             for i in range(passes):
@@ -107,8 +164,10 @@ class Shreder(object):
         shutil.rmtree(path)
 
     def set_hashes(self):
-        """
-        Set hashes to an iterator
+        """Read hash files and set it as an iterator.
+
+        Returns:
+            iter: An iterator of hash strings.
         """
 
         if not os.path.exists(os.path.abspath(self.hash_file)):
@@ -133,12 +192,23 @@ class Shreder(object):
         return ""
 
     def verify_hash(self, msg):
+        """Verifies next hash from set_hashes() with the giving message.
+
+        Args:
+            msg (str): A message which should match the next hash in the iterator.
+        Returns:
+            bool: True if msg matches, False otherwise.
+        """
+
         msg = hashlib.sha512(msg)
         return msg.hexdigest() == self.hashes.next().lower()
 
     def _test_executable(self):
         """
         Tests if the hash matches the executable and checks if the executable exists
+
+        Returns:
+            bool: True if executable matches the hash and exists, False otherwise.
         """
 
         def is_exe(fpath): return os.path.isfile(fpath) and os.access(fpath, os.X_OK)
@@ -164,10 +234,24 @@ class Shreder(object):
         return False
 
     def __next_hash(self, hashlist):
+        """Yield the next hash from the hashlist
+
+        Args:
+            hashlist (list): A list of SHA512 hashes.
+
+        Returns:
+            str: A string of the next hash in the hashlist
+
+        Raises:
+            StopIteration: If hashlist is empty of there is nothing left in the list
+                            to throw.
+        """
+
         for _ in hashlist:
             yield _
 
     def wait(self):
+        """Shows basic informatin warning the program will start to run. """
         counter = 10
         while counter > 0:
             sys.stdout.write("Starting execution in %d\n" % counter)
@@ -176,6 +260,7 @@ class Shreder(object):
             counter -= 1
 
     def info(self):
+        """Writes to stdout the program's information"""
         sys.stdout.write("########### Shreder information ##########\n")
         sys.stdout.write("Current pid: %*d\n" % (20, os.getpid()))
         sys.stdout.write("Debug enabled: %*d\n" % (18, 1 if self.debug else 0))
