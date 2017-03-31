@@ -7,6 +7,7 @@ import tempfile
 import errno
 import subprocess
 import json
+import shutil
 
 from time import sleep
 
@@ -89,6 +90,21 @@ class Shreder(object):
                                                        self.executable_args, _f))
             else:
                 subprocess.call([self.executable, self.executable_args, _f])
+
+    def secure_delete(path, passes=1):
+        with open(path, "ba+") as f:
+            _len = f.tell()
+            for i in range(passes):
+                f.seek(0)
+                if self.debug:
+                    sys.stdout.write("Running os.urandom (passes = %d) into \
+                            '%s'\n" % (passes, path))
+                else:
+                    f.write(os.urandom(_len))
+        if self.debug:
+            sys.stdout.write("Running rmtree %s\n" % path)
+            return
+        shutil.rmtree(path)
 
     def set_hashes(self):
         """
